@@ -183,9 +183,10 @@ class BleConnectionManager extends ChangeNotifier {
           final bike = DiscoveredBike(
             id: device.remoteId.str,
             name: name,
-            rssi: -50,
+            rssi: 0,
             adapter: matchedAdapter,
             isPaired: true,
+            isNearby: false,
           );
           if (!_discoveredBikes.any((b) => b.id == bike.id)) {
             if (isTvs) {
@@ -228,6 +229,7 @@ class BleConnectionManager extends ChangeNotifier {
             _discoveredBikes[existingIdx] = _discoveredBikes[existingIdx].copyWith(
               rssi: r.rssi,
               name: name,
+              isNearby: true,
             );
           } else {
             final bike = DiscoveredBike(
@@ -235,6 +237,7 @@ class BleConnectionManager extends ChangeNotifier {
               name: name,
               rssi: r.rssi,
               adapter: matchedAdapter,
+              isNearby: true,
             );
             // Prioritize TVS / RMB SmartXonnect devices at the top
             if (isTvs) {
@@ -277,14 +280,8 @@ class BleConnectionManager extends ChangeNotifier {
       final device = BluetoothDevice.fromId(bike.id);
       _connectedDevice = device;
 
-      // Track connection state
+      // Ensure any previous connection listener is cleaned up before connecting
       await _connectionSubscription?.cancel();
-      _connectionSubscription = device.connectionState.listen((state) {
-        if (state == BluetoothConnectionState.disconnected &&
-            _stage != ConnectionStage.disconnected) {
-          _handleDisconnection();
-        }
-      });
 
       await device.connect(
         license: License.nonprofit,
@@ -292,6 +289,14 @@ class BleConnectionManager extends ChangeNotifier {
         autoConnect: false,
         mtu: null,
       );
+
+      // Track connection state ONLY after connection is successfully established
+      _connectionSubscription = device.connectionState.listen((state) {
+        if (state == BluetoothConnectionState.disconnected &&
+            _stage != ConnectionStage.disconnected) {
+          _handleDisconnection();
+        }
+      });
 
       // Discover GATT services
       final services = await device.discoverServices();
@@ -357,7 +362,18 @@ class BleConnectionManager extends ChangeNotifier {
         _setStage(ConnectionStage.awaitingPin);
       }
     } catch (e) {
-      _setStage(ConnectionStage.error, error: 'Connection failed: $e');
+      final msg = e.toString().toLowerCase();
+      if (msg.contains('connection canceled') ||
+          msg.contains('code: 10') ||
+          msg.contains('timed out') ||
+          msg.contains('timeout')) {
+        _setStage(
+          ConnectionStage.error,
+          error: 'Bike cluster unreachable. Please turn bike ignition ON (screen awake) and keep your phone near the bike.',
+        );
+      } else {
+        _setStage(ConnectionStage.error, error: 'Connection failed: $e');
+      }
     }
   }
 

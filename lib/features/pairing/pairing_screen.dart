@@ -501,8 +501,12 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
                       ),
                     ),
                     Text(
-                      '${bike.rssi} dBm',
-                      style: const TextStyle(color: AppColors.textMuted, fontSize: 11),
+                      bike.isNearby ? '${bike.rssi} dBm' : 'Turn Ignition ON',
+                      style: TextStyle(
+                        color: bike.isNearby ? AppColors.textMuted : AppColors.accent,
+                        fontSize: 11,
+                        fontWeight: bike.isNearby ? FontWeight.normal : FontWeight.bold,
+                      ),
                     ),
                   ],
                 ),
