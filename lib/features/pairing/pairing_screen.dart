@@ -351,11 +351,12 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
               padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 10),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
-            onPressed: () {
+            onPressed: () async {
               if (bleManager.isSimulating) {
                 bleManager.stopSimulatedSession();
               } else {
-                bleManager.startSimulatedSession();
+                await bleManager.startSimulatedSession();
+                if (!context.mounted) return;
                 MotoLinkConnectedOverlay.show(
                   context,
                   bikeName: 'TI05BL06 (Virtual Cluster)',

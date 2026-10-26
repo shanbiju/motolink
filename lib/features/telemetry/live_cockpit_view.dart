@@ -62,20 +62,22 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
     final bleManager = ref.watch(bleManagerProvider);
     final telemetry = ref.watch(telemetryProvider);
 
-    // Sync live telemetry to trip recorder
-    _tripRecorder.updateTelemetry(
-      speedKmh: telemetry.speedKmh,
-      odoKm: telemetry.odometerKm > 0 ? telemetry.odometerKm : 8817.6,
-      batteryV: telemetry.batteryVoltage > 0 ? telemetry.batteryVoltage : 12.3,
-      dte: telemetry.distanceToEmptyKm,
-    );
+    // Sync live telemetry to trip recorder via ref.listen to avoid side-effects in build
+    ref.listen(telemetryProvider, (prev, next) {
+      _tripRecorder.updateTelemetry(
+        speedKmh: next.speedKmh,
+        odoKm: next.odometerKm > 0 ? next.odometerKm : 8817.6,
+        batteryV: next.batteryVoltage > 0 ? next.batteryVoltage : 12.3,
+        dte: next.distanceToEmptyKm,
+      );
+    });
 
     final isConnected = bleManager.stage.isConnected;
     final bikeName = bleManager.selectedBike?.name ?? 'Apache RTR 200';
     final macAddress = bleManager.selectedBike?.id ?? '48:23:35:40:95:3B';
 
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: AppColors.bgOf(context),
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -90,11 +92,11 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
               ),
             ),
             const SizedBox(width: 8),
-            const Flexible(
+            Flexible(
               child: Text(
                 'MOTOLINK LIVE',
                 style: TextStyle(
-                  color: AppColors.textLight,
+                  color: AppColors.textOf(context),
                   fontSize: 18,
                   fontWeight: FontWeight.w900,
                   letterSpacing: 0.5,
@@ -106,14 +108,14 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.settings_outlined, color: AppColors.textLight, size: 24),
+            icon: Icon(Icons.settings_outlined, color: AppColors.textOf(context), size: 24),
             tooltip: 'Settings',
             onPressed: _navigateToSettings,
           ),
           IconButton(
-            icon: const Icon(
+            icon: Icon(
               Icons.speed,
-              color: AppColors.textLight,
+              color: AppColors.textOf(context),
               size: 24,
             ),
             tooltip: 'RTR 200 Race Cluster',
@@ -134,8 +136,8 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
             // Subtitle: Connected • MAC Address
             Text(
               isConnected ? 'Connected • $macAddress • $bikeName' : 'Ready to Connect • $bikeName',
-              style: const TextStyle(
-                color: AppColors.textMuted,
+              style: TextStyle(
+                color: AppColors.textMutedOf(context),
                 fontSize: 13,
                 fontWeight: FontWeight.w500,
               ),
@@ -143,11 +145,11 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
             const SizedBox(height: 18),
 
             // Card 1: LIVE VELOCITY & FUEL GAUGE
-            _buildVelocityHeroCard(telemetry, isConnected),
+            _buildVelocityHeroCard(context, telemetry, isConnected),
             const SizedBox(height: 18),
 
             // Card 2: BIKE STATUS (Odo, Mileage, Battery)
-            _buildBikeStatusCard(telemetry),
+            _buildBikeStatusCard(context, telemetry),
             const SizedBox(height: 18),
 
             // Card 3: CLUSTER NOW PLAYING & 5G NETWORK STATUS
@@ -158,7 +160,7 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
             Center(
               child: TextButton.icon(
                 style: TextButton.styleFrom(
-                  foregroundColor: AppColors.accent,
+                  foregroundColor: AppColors.accentOf(context),
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 ),
                 onPressed: () {
@@ -179,19 +181,27 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
     );
   }
 
-  Widget _buildVelocityHeroCard(TelemetryData data, bool isConnected) {
+  Widget _buildVelocityHeroCard(BuildContext context, TelemetryData data, bool isConnected) {
+    final isDark = AppColors.isDark(context);
+    final textCol = AppColors.textOf(context);
+    final textMutedCol = AppColors.textMutedOf(context);
+    final surfaceCol = AppColors.surfaceOf(context);
+    final surfaceLightCol = AppColors.surfaceLightOf(context);
+    final borderCol = AppColors.borderOf(context);
+    final accentCol = AppColors.accentOf(context);
+
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
-        color: AppColors.surface,
+        color: surfaceCol,
         borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: AppColors.border),
-        boxShadow: const [
+        border: Border.all(color: borderCol),
+        boxShadow: [
           BoxShadow(
-            color: Colors.black26,
+            color: isDark ? Colors.black26 : Colors.black12,
             blurRadius: 16,
-            offset: Offset(0, 4),
+            offset: const Offset(0, 4),
           ),
         ],
       ),
@@ -208,16 +218,16 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
                     width: 32,
                     height: 32,
                     decoration: BoxDecoration(
-                      color: AppColors.surfaceLight,
+                      color: surfaceLightCol,
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: const Icon(Icons.speed, color: AppColors.accent, size: 18),
+                    child: Icon(Icons.speed, color: accentCol, size: 18),
                   ),
                   const SizedBox(width: 10),
-                  const Text(
+                  Text(
                     'LIVE VELOCITY',
                     style: TextStyle(
-                      color: AppColors.textMuted,
+                      color: textMutedCol,
                       fontSize: 12,
                       fontWeight: FontWeight.w800,
                       letterSpacing: 0.8,
@@ -258,8 +268,8 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
             children: [
               Text(
                 data.speedKmh.toStringAsFixed(0),
-                style: const TextStyle(
-                  color: AppColors.textLight,
+                style: TextStyle(
+                  color: textCol,
                   fontSize: 72,
                   fontWeight: FontWeight.w900,
                   height: 1.0,
@@ -267,10 +277,10 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
                 ),
               ),
               const SizedBox(width: 8),
-              const Text(
+              Text(
                 'km/h',
                 style: TextStyle(
-                  color: AppColors.textLight,
+                  color: textCol,
                   fontSize: 22,
                   fontWeight: FontWeight.w600,
                 ),
@@ -282,7 +292,7 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
           // Fuel bar blocks + DTE (Distance To Empty)
           Row(
             children: [
-              const Icon(Icons.local_gas_station_outlined, color: AppColors.textLight, size: 20),
+              Icon(Icons.local_gas_station_outlined, color: textCol, size: 20),
               const SizedBox(width: 10),
               // 6 Fuel Bar Blocks
               Expanded(
@@ -295,10 +305,10 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
                         height: 14,
                         margin: const EdgeInsets.symmetric(horizontal: 2.5),
                         decoration: BoxDecoration(
-                          color: isFilled ? AppColors.accent : AppColors.surfaceLight,
+                          color: isFilled ? accentCol : surfaceLightCol,
                           borderRadius: BorderRadius.circular(4),
                           border: Border.all(
-                            color: isFilled ? AppColors.accent : AppColors.border,
+                            color: isFilled ? accentCol : borderCol,
                             width: 1,
                           ),
                         ),
@@ -310,8 +320,8 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
               const SizedBox(width: 12),
               Text(
                 '${data.distanceToEmptyKm} km DTE',
-                style: const TextStyle(
-                  color: AppColors.textLight,
+                style: TextStyle(
+                  color: textCol,
                   fontSize: 13,
                   fontWeight: FontWeight.w700,
                 ),
@@ -320,18 +330,18 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
           ),
           const SizedBox(height: 26),
 
-          // Find My Scooter / Bike Button (Matching black rounded button in screenshot)
+          // Find My Scooter / Bike Button
           SizedBox(
             width: double.infinity,
             height: 52,
             child: ElevatedButton(
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF1F1F1F),
-                foregroundColor: AppColors.textLight,
+                backgroundColor: isDark ? const Color(0xFF1F1F1F) : surfaceLightCol,
+                foregroundColor: textCol,
                 elevation: 0,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(26),
-                  side: const BorderSide(color: AppColors.border, width: 1.2),
+                  side: BorderSide(color: borderCol, width: 1.2),
                 ),
               ),
               onPressed: _navigateToFindMyBike,
@@ -350,19 +360,26 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
     );
   }
 
-  Widget _buildBikeStatusCard(TelemetryData data) {
+  Widget _buildBikeStatusCard(BuildContext context, TelemetryData data) {
     final batteryVolts = data.batteryVoltage > 0 ? data.batteryVoltage : 12.3;
     final isWeakBattery = batteryVolts < 12.4;
     final odoKm = data.odometerKm > 0 ? data.odometerKm : _tripRecorder.odometerKm;
     final mileage = data.instantMileageKml > 0 ? data.instantMileageKml : 0.0;
 
+    final textCol = AppColors.textOf(context);
+    final textMutedCol = AppColors.textMutedOf(context);
+    final surfaceCol = AppColors.surfaceOf(context);
+    final surfaceLightCol = AppColors.surfaceLightOf(context);
+    final borderCol = AppColors.borderOf(context);
+    final accentCol = AppColors.accentOf(context);
+
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
-        color: AppColors.surface,
+        color: surfaceCol,
         borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: AppColors.border),
+        border: Border.all(color: borderCol),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -377,16 +394,16 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
                     width: 32,
                     height: 32,
                     decoration: BoxDecoration(
-                      color: AppColors.surfaceLight,
+                      color: surfaceLightCol,
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: const Icon(Icons.two_wheeler, color: AppColors.accent, size: 18),
+                    child: Icon(Icons.two_wheeler, color: accentCol, size: 18),
                   ),
                   const SizedBox(width: 10),
-                  const Text(
+                  Text(
                     'BIKE STATUS',
                     style: TextStyle(
-                      color: AppColors.textMuted,
+                      color: textMutedCol,
                       fontSize: 12,
                       fontWeight: FontWeight.w800,
                       letterSpacing: 0.8,
@@ -396,8 +413,8 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
               ),
               Text(
                 '${odoKm.toStringAsFixed(1)} km',
-                style: const TextStyle(
-                  color: AppColors.textLight,
+                style: TextStyle(
+                  color: textCol,
                   fontSize: 15,
                   fontWeight: FontWeight.w700,
                 ),
@@ -409,16 +426,16 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
           // Row 1: Mileage
           Row(
             children: [
-              const Icon(Icons.eco_outlined, color: AppColors.textLight, size: 22),
+              Icon(Icons.eco_outlined, color: textCol, size: 22),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
+                    Text(
                       'Mileage (Live & Avg)',
                       style: TextStyle(
-                        color: AppColors.textLight,
+                        color: textCol,
                         fontSize: 15,
                         fontWeight: FontWeight.w600,
                       ),
@@ -426,8 +443,8 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
                     const SizedBox(height: 2),
                     Text(
                       'Live: ${mileage.toStringAsFixed(0)} km/L • Avg: ${data.averageMileageKml.toStringAsFixed(1)} km/L',
-                      style: const TextStyle(
-                        color: AppColors.textMuted,
+                      style: TextStyle(
+                        color: textMutedCol,
                         fontSize: 12,
                         fontWeight: FontWeight.w500,
                       ),
@@ -452,24 +469,24 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
               ),
             ],
           ),
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 14.0),
-            child: Divider(color: AppColors.border, height: 1),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 14.0),
+            child: Divider(color: borderCol, height: 1),
           ),
 
           // Row 2: Battery
           Row(
             children: [
-              const Icon(Icons.battery_std, color: AppColors.textLight, size: 22),
+              Icon(Icons.battery_std, color: textCol, size: 22),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
+                    Text(
                       'Battery',
                       style: TextStyle(
-                        color: AppColors.textLight,
+                        color: textCol,
                         fontSize: 15,
                         fontWeight: FontWeight.w600,
                       ),
@@ -477,8 +494,8 @@ class _LiveCockpitViewState extends ConsumerState<LiveCockpitView> {
                     const SizedBox(height: 2),
                     Text(
                       '${batteryVolts.toStringAsFixed(1)} V',
-                      style: const TextStyle(
-                        color: AppColors.textMuted,
+                      style: TextStyle(
+                        color: textMutedCol,
                         fontSize: 13,
                         fontWeight: FontWeight.w500,
                       ),

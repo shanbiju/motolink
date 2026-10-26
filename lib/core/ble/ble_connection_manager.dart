@@ -45,6 +45,7 @@ class BleConnectionManager extends ChangeNotifier {
   StreamSubscription<List<ScanResult>>? _scanSubscription;
   StreamSubscription<BluetoothConnectionState>? _connectionSubscription;
   StreamSubscription<List<int>>? _telemetrySubscription;
+  StreamSubscription<BluetoothBondState>? _bondStateSubscription;
 
   // Auto-connect on ignition start settings
   static const String _prefBikeId = 'motolink_saved_bike_id';
@@ -469,7 +470,8 @@ class BleConnectionManager extends ChangeNotifier {
       }
 
       // Dynamic bond listener: automatically finalize authentication as soon as Android completes pairing
-      device.bondState.listen((bondState) {
+      await _bondStateSubscription?.cancel();
+      _bondStateSubscription = device.bondState.listen((bondState) {
         if (bondState == BluetoothBondState.bonded && _stage == ConnectionStage.awaitingPin) {
           _finalizeAuthentication();
         }
@@ -623,8 +625,8 @@ class BleConnectionManager extends ChangeNotifier {
   bool get isSimulating => _isSimulating;
 
   /// Start a simulated TVS cluster session from your desk without needing the physical bike
-  void startSimulatedSession({String bikeName = 'TI05BL06 (Virtual Cluster)'}) {
-    disconnect(userInitiated: true);
+  Future<void> startSimulatedSession({String bikeName = 'TI05BL06 (Virtual Cluster)'}) async {
+    await disconnect(userInitiated: true);
     _isSimulating = true;
     _selectedBike = DiscoveredBike(
       id: 'VIRTUAL_TVS_01',
@@ -728,6 +730,7 @@ class BleConnectionManager extends ChangeNotifier {
 
     await _telemetrySubscription?.cancel();
     await _connectionSubscription?.cancel();
+    await _bondStateSubscription?.cancel();
     try {
       await _connectedDevice?.disconnect();
     } catch (_) {}
@@ -813,9 +816,11 @@ class BleConnectionManager extends ChangeNotifier {
 
   @override
   void dispose() {
+    _simulationTimer?.cancel();
     _scanSubscription?.cancel();
     _connectionSubscription?.cancel();
     _telemetrySubscription?.cancel();
+    _bondStateSubscription?.cancel();
     super.dispose();
   }
 }

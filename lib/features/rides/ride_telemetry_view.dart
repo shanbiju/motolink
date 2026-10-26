@@ -51,12 +51,15 @@ class _RideTelemetryViewState extends ConsumerState<RideTelemetryView> {
     final bleManager = ref.watch(bleManagerProvider);
     final telemetry = ref.watch(telemetryProvider);
 
-    _tripRecorder.updateTelemetry(
-      speedKmh: telemetry.speedKmh,
-      odoKm: telemetry.odometerKm > 0 ? telemetry.odometerKm : _tripRecorder.odometerKm,
-      economy: telemetry.instantMileageKml > 0 ? telemetry.instantMileageKml : 53.0,
-      batteryV: telemetry.batteryVoltage > 0 ? telemetry.batteryVoltage : 12.3,
-    );
+    // Sync live telemetry to trip recorder via ref.listen to avoid side-effects in build
+    ref.listen(telemetryProvider, (prev, next) {
+      _tripRecorder.updateTelemetry(
+        speedKmh: next.speedKmh,
+        odoKm: next.odometerKm > 0 ? next.odometerKm : _tripRecorder.odometerKm,
+        economy: next.instantMileageKml > 0 ? next.instantMileageKml : 53.0,
+        batteryV: next.batteryVoltage > 0 ? next.batteryVoltage : 12.3,
+      );
+    });
 
     final bikeName = bleManager.selectedBike?.name ?? 'TVS';
     final isRecording = _tripRecorder.isRecording;

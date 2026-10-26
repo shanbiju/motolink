@@ -9,6 +9,7 @@ import 'features/navigation/navigation_dispatch_view.dart';
 import 'features/pairing/pairing_screen.dart';
 import 'features/media/cluster_media_service.dart';
 import 'features/media/notification_media_service.dart';
+import 'features/ibutton/ibutton_service.dart';
 import 'features/rides/my_rides_view.dart';
 import 'features/rides/ride_telemetry_view.dart';
 import 'features/telemetry/live_cockpit_view.dart';
@@ -20,6 +21,7 @@ void main() async {
   await TripRecorderService.instance.init();
   await ClusterMediaService.instance.init();
   await NotificationMediaService.instance.init();
+  await IButtonService.instance.init();
   runApp(const MotoLinkApp());
 }
 

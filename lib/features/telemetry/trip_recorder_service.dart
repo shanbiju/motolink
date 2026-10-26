@@ -92,7 +92,7 @@ class TripRecorderService extends ChangeNotifier {
     final record = RideRecord(
       id: 'TRIP-${DateTime.now().millisecondsSinceEpoch}',
       title: 'City Ride • TVS RTR 200',
-      date: '${now.day}th${_getMonthAbbr(now.month)}',
+      date: '${now.day}${_getOrdinalSuffix(now.day)}${_getMonthAbbr(now.month)}',
       distanceKm: distanceCovered,
       duration: _elapsed,
       topSpeedKmh: (_topSpeedKmh > 0 ? _topSpeedKmh : 62.0).round(),
@@ -110,6 +110,16 @@ class TripRecorderService extends ChangeNotifier {
 
     _persistStats();
     notifyListeners();
+  }
+
+  static String _getOrdinalSuffix(int day) {
+    if (day >= 11 && day <= 13) return 'th';
+    switch (day % 10) {
+      case 1: return 'st';
+      case 2: return 'nd';
+      case 3: return 'rd';
+      default: return 'th';
+    }
   }
 
   static String _getMonthAbbr(int month) {

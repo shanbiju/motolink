@@ -30,7 +30,7 @@ class MotoLinkConnectedOverlay extends StatefulWidget {
       context: context,
       barrierDismissible: true,
       barrierLabel: 'Dismiss',
-      barrierColor: Colors.black.withOpacity(0.85),
+      barrierColor: const Color(0xD9000000),
       transitionDuration: const Duration(milliseconds: 400),
       pageBuilder: (context, anim1, anim2) {
         return MotoLinkConnectedOverlay(
