@@ -47,6 +47,7 @@ class DiscoveredBike {
   final VehicleAdapter adapter;
   final bool isPaired;
   final bool isNearby;
+  final bool isTvs;
 
   const DiscoveredBike({
     required this.id,
@@ -55,6 +56,7 @@ class DiscoveredBike {
     required this.adapter,
     this.isPaired = false,
     this.isNearby = true,
+    this.isTvs = true,
   });
 
   DiscoveredBike copyWith({
@@ -64,6 +66,7 @@ class DiscoveredBike {
     VehicleAdapter? adapter,
     bool? isPaired,
     bool? isNearby,
+    bool? isTvs,
   }) {
     return DiscoveredBike(
       id: id ?? this.id,
@@ -72,6 +75,7 @@ class DiscoveredBike {
       adapter: adapter ?? this.adapter,
       isPaired: isPaired ?? this.isPaired,
       isNearby: isNearby ?? this.isNearby,
+      isTvs: isTvs ?? this.isTvs,
     );
   }
 }

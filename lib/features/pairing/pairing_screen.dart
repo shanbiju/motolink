@@ -340,12 +340,43 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
               ),
             ),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 8),
+          OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: bleManager.isSimulating ? AppColors.error : AppColors.accent,
+              side: BorderSide(
+                color: bleManager.isSimulating ? AppColors.error : AppColors.accent,
+                width: 1.4,
+              ),
+              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 10),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            onPressed: () {
+              if (bleManager.isSimulating) {
+                bleManager.stopSimulatedSession();
+              } else {
+                bleManager.startSimulatedSession();
+                MotoLinkConnectedOverlay.show(
+                  context,
+                  bikeName: 'TI05BL06 (Virtual Cluster)',
+                );
+              }
+            },
+            icon: Icon(
+              bleManager.isSimulating ? Icons.stop_circle : Icons.sports_motorsports,
+              size: 18,
+            ),
+            label: Text(
+              bleManager.isSimulating ? 'STOP SIM' : 'SIMULATE',
+              style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 11),
+            ),
+          ),
+          const SizedBox(width: 8),
           OutlinedButton.icon(
             style: OutlinedButton.styleFrom(
               foregroundColor: AppColors.accent,
               side: const BorderSide(color: AppColors.accent, width: 1.4),
-              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
+              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 10),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
             onPressed: () {
@@ -412,12 +443,7 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
     final isConnecting = bleManager.selectedBike?.id == bike.id &&
         bleManager.stage == ConnectionStage.connecting;
 
-    final upper = bike.name.toUpperCase();
-    final isTvs = upper.startsWith('RMB') ||
-        upper.contains('TVS') ||
-        upper.contains('RTR') ||
-        upper.contains('APACHE') ||
-        upper.contains('SMARTXONNECT');
+    final isTvs = bike.isTvs;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -524,7 +550,38 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
                 padding: EdgeInsets.zero,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
               ),
-              onPressed: isConnecting ? null : () => bleManager.connect(bike),
+              onPressed: isConnecting
+                  ? null
+                  : () {
+                      if (!bike.isTvs) {
+                        showDialog(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            backgroundColor: AppColors.surface,
+                            title: const Text('Non-Bike Device', style: TextStyle(color: AppColors.textLight)),
+                            content: Text(
+                              '${bike.name} is not a TVS SmartXonnect cluster. Connect anyway?',
+                              style: const TextStyle(color: AppColors.textMuted),
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(ctx),
+                                child: const Text('CANCEL', style: TextStyle(color: AppColors.textMuted)),
+                              ),
+                              TextButton(
+                                onPressed: () {
+                                  Navigator.pop(ctx);
+                                  bleManager.connect(bike);
+                                },
+                                child: const Text('CONNECT', style: TextStyle(color: AppColors.accent)),
+                              ),
+                            ],
+                          ),
+                        );
+                      } else {
+                        bleManager.connect(bike);
+                      }
+                    },
               child: isConnecting
                   ? const SizedBox(
                       width: 16,

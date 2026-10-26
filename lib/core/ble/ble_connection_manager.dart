@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -102,26 +104,35 @@ class BleConnectionManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Checks if a device name corresponds to TVS SmartXonnect, RMB, RTR, Apache, etc.
-  bool _isTvsDevice(String name) {
+  /// Checks if a device name corresponds to TVS SmartXonnect, RMB, RTR, Apache, TI05BL, etc.
+  static bool isTvsDevice(String name) {
     if (name.isEmpty) return false;
     final upper = name.toUpperCase();
     return upper.startsWith('RMB') ||
-        upper.startsWith('TI') ||
-        upper.startsWith('B0:D2:78') ||
+        upper.startsWith('TI') || // TVS Instrument cluster (TI05, TI05BL06, etc.)
+        upper.startsWith('TVS') ||
+        upper.startsWith('APACHE') ||
+        upper.startsWith('RTR') ||
+        upper.startsWith('RR') ||
+        upper.startsWith('NTORQ') ||
+        upper.startsWith('RONIN') ||
+        upper.startsWith('RAIDER') ||
+        upper.startsWith('JUPITER') ||
+        upper.startsWith('IQUE') ||
+        upper.startsWith('B0:D2:78') || // TVS Bluetooth OUI
+        upper.contains('SMARTXONNECT') ||
+        upper.contains('XONNECT') ||
         upper.contains('TVS') ||
         upper.contains('RTR') ||
         upper.contains('APACHE') ||
-        upper.contains('SMARTXONNECT') ||
-        upper.contains('XONNECT') ||
-        upper.contains('310') ||
-        upper.contains('200') ||
-        upper.contains('160') ||
-        upper.contains('125') ||
         upper.contains('NTORQ') ||
         upper.contains('RONIN') ||
         upper.contains('RAIDER') ||
-        upper.contains('JUPITER');
+        upper.contains('JUPITER') ||
+        upper.contains('RR310') ||
+        upper.contains('RTR310') ||
+        upper.contains('RTR200') ||
+        upper.contains('RTR160');
   }
 
   /// Request runtime Bluetooth and Location permissions (Android 12+ and legacy)
@@ -167,12 +178,15 @@ class BleConnectionManager extends ChangeNotifier {
       _discoveredBikes.clear();
       _setStage(ConnectionStage.scanning);
 
-      // 1. Immediately load already bonded/paired Bluetooth devices (e.g. RMB477454C8DF0)
+      // 1. Immediately load already bonded/paired TVS SmartXonnect clusters (e.g. TI05BL06, RMB...)
       try {
         final bonded = await FlutterBluePlus.bondedDevices;
         for (final device in bonded) {
           final name = device.platformName.isNotEmpty ? device.platformName : device.remoteId.str;
-          final isTvs = _isTvsDevice(name);
+          final isTvs = isTvsDevice(name);
+          // Only add bonded devices that are TVS SmartXonnect clusters (exclude headphones, watches, etc.)
+          if (!isTvs) continue;
+
           VehicleAdapter matchedAdapter = _adapter;
           if (name.toUpperCase().contains('310') || name.toUpperCase().contains('RR')) {
             matchedAdapter = TvsRr310Adapter();
@@ -187,13 +201,10 @@ class BleConnectionManager extends ChangeNotifier {
             adapter: matchedAdapter,
             isPaired: true,
             isNearby: false,
+            isTvs: true,
           );
           if (!_discoveredBikes.any((b) => b.id == bike.id)) {
-            if (isTvs) {
-              _discoveredBikes.insert(0, bike);
-            } else {
-              _discoveredBikes.add(bike);
-            }
+            _discoveredBikes.add(bike);
           }
         }
         if (_discoveredBikes.isNotEmpty) {
@@ -215,7 +226,7 @@ class BleConnectionManager extends ChangeNotifier {
 
           if (name.isEmpty) continue;
 
-          final isTvs = _isTvsDevice(name);
+          final isTvs = isTvsDevice(name);
 
           VehicleAdapter matchedAdapter = _adapter;
           if (name.toUpperCase().contains('310') || name.toUpperCase().contains('RR')) {
@@ -230,6 +241,7 @@ class BleConnectionManager extends ChangeNotifier {
               rssi: r.rssi,
               name: name,
               isNearby: true,
+              isTvs: isTvs,
             );
           } else {
             final bike = DiscoveredBike(
@@ -238,6 +250,7 @@ class BleConnectionManager extends ChangeNotifier {
               rssi: r.rssi,
               adapter: matchedAdapter,
               isNearby: true,
+              isTvs: isTvs,
             );
             // Prioritize TVS / RMB SmartXonnect devices at the top
             if (isTvs) {
@@ -298,33 +311,90 @@ class BleConnectionManager extends ChangeNotifier {
         }
       });
 
-      // Discover GATT services
-      final services = await device.discoverServices();
-      BluetoothService? tvsService;
+      // Clear Android GATT cache to prevent stale handles from previous pairings
+      if (!kIsWeb && Platform.isAndroid) {
+        try {
+          await device.clearGattCache();
+        } catch (e) {
+          debugPrint('[BLE] clearGattCache notice: $e');
+        }
+      }
 
+      // Small delay for BLE connection layer to stabilize
+      await Future.delayed(const Duration(milliseconds: 350));
+
+      // Request MTU up to 512 for high-speed telemetry frames
+      if (!kIsWeb && Platform.isAndroid) {
+        try {
+          await device.requestMtu(512);
+        } catch (e) {
+          debugPrint('[BLE] requestMtu notice: $e');
+        }
+      }
+
+      // Discover GATT services with retry
+      List<BluetoothService> services = [];
+      try {
+        services = await device.discoverServices();
+      } catch (e) {
+        debugPrint('[BLE] discoverServices pass 1: $e');
+      }
+
+      if (services.isEmpty) {
+        await Future.delayed(const Duration(milliseconds: 500));
+        try {
+          services = await device.discoverServices();
+        } catch (e) {
+          debugPrint('[BLE] discoverServices pass 2: $e');
+        }
+      }
+
+      BluetoothService? tvsService;
       final expectedServiceGuid = Guid(_adapter.serviceUuid);
-      final expectedServiceNormalized = expectedServiceGuid.str128.replaceAll('-', '').toUpperCase();
-      final expectedReadNormalized = Guid(_adapter.readCharacteristicUuid).str128.replaceAll('-', '').toUpperCase();
-      final expectedWriteNormalized = Guid(_adapter.writeCharacteristicUuid).str128.replaceAll('-', '').toUpperCase();
+      final expectedServiceNorm = expectedServiceGuid.str128.replaceAll('-', '').toUpperCase();
+      final expectedReadNorm = Guid(_adapter.readCharacteristicUuid).str128.replaceAll('-', '').toUpperCase();
+      final expectedWriteNorm = Guid(_adapter.writeCharacteristicUuid).str128.replaceAll('-', '').toUpperCase();
 
       for (final s in services) {
+        final sNorm = s.uuid.str128.replaceAll('-', '').toUpperCase();
+        final sStr = s.uuid.str.toUpperCase();
         if (s.uuid == expectedServiceGuid ||
-            s.uuid.str128.replaceAll('-', '').toUpperCase() == expectedServiceNormalized) {
+            sNorm == expectedServiceNorm ||
+            sStr.contains('5456534D') ||
+            sNorm.startsWith('5456534D') ||
+            sStr.contains('TVS')) {
           tvsService = s;
           break;
         }
       }
 
       // Locate Read/Notify (0x5354) and Write (0x5352) characteristics
-      // Check in matched tvsService first, or search across ALL services as fallback
-      final servicesToInspect = tvsService != null ? [tvsService, ...services] : services;
+      _telemetryCharacteristic = null;
+      _commandCharacteristic = null;
 
+      final servicesToInspect = tvsService != null
+          ? [tvsService, ...services.where((s) => s != tvsService)]
+          : services;
+
+      // Pass 1: Strict UUID matching (exact 128-bit, 16-bit, or contains 5354 / 5352)
       for (final s in servicesToInspect) {
         for (final c in s.characteristics) {
           final cNorm = c.uuid.str128.replaceAll('-', '').toUpperCase();
-          if (cNorm == expectedReadNormalized || c.uuid.str.toUpperCase().contains('5354')) {
+          final cStr = c.uuid.str.toUpperCase();
+
+          if (_telemetryCharacteristic == null &&
+              (cNorm == expectedReadNorm ||
+                  cStr.contains('5354') ||
+                  cNorm.contains('5354') ||
+                  cStr.endsWith('5354'))) {
             _telemetryCharacteristic = c;
-          } else if (cNorm == expectedWriteNormalized || c.uuid.str.toUpperCase().contains('5352')) {
+          }
+
+          if (_commandCharacteristic == null &&
+              (cNorm == expectedWriteNorm ||
+                  cStr.contains('5352') ||
+                  cNorm.contains('5352') ||
+                  cStr.endsWith('5352'))) {
             _commandCharacteristic = c;
           }
         }
@@ -333,11 +403,68 @@ class BleConnectionManager extends ChangeNotifier {
         }
       }
 
+      // Pass 2: Fallback in matched TVS Primary Service
+      // The TVS SmartXonnect service has exactly 2 characteristics:
+      // Telemetry (Notify/Indicate) and Command (Write/WriteWithoutResponse)
+      if (tvsService != null &&
+          (_telemetryCharacteristic == null || _commandCharacteristic == null)) {
+        for (final c in tvsService.characteristics) {
+          if (_telemetryCharacteristic == null &&
+              (c.properties.notify || c.properties.indicate)) {
+            _telemetryCharacteristic = c;
+            debugPrint('[BLE] Bound telemetry characteristic via notify property: ${c.uuid}');
+          } else if (_commandCharacteristic == null &&
+              (c.properties.write || c.properties.writeWithoutResponse)) {
+            _commandCharacteristic = c;
+            debugPrint('[BLE] Bound command characteristic via write property: ${c.uuid}');
+          }
+        }
+      }
+
+      // Pass 3: Fallback across any non-SIG custom vendor service if still missing
       if (_telemetryCharacteristic == null || _commandCharacteristic == null) {
-        _setStage(
-          ConnectionStage.error,
-          error: 'Required SmartXonnect telemetry (0x5354) / command (0x5352) characteristics not found',
-        );
+        for (final s in services) {
+          final sStr = s.uuid.str.toUpperCase();
+          if (sStr.startsWith('000018') ||
+              sStr == '1800' ||
+              sStr == '1801' ||
+              sStr == '180A' ||
+              sStr == '180F') {
+            continue;
+          }
+          for (final c in s.characteristics) {
+            if (_telemetryCharacteristic == null &&
+                (c.properties.notify || c.properties.indicate)) {
+              _telemetryCharacteristic = c;
+            } else if (_commandCharacteristic == null &&
+                (c.properties.write || c.properties.writeWithoutResponse)) {
+              _commandCharacteristic = c;
+            }
+          }
+          if (_telemetryCharacteristic != null && _commandCharacteristic != null) break;
+        }
+      }
+
+      if (_telemetryCharacteristic == null || _commandCharacteristic == null) {
+        if (services.isEmpty) {
+          _setStage(
+            ConnectionStage.error,
+            error:
+                'Bike cluster services not ready. Please turn ignition OFF, wait 5 seconds, turn ignition ON and tap CONNECT.',
+          );
+        } else if (!bike.isTvs) {
+          _setStage(
+            ConnectionStage.error,
+            error:
+                '${bike.name} is not a TVS SmartXonnect motorcycle. Please select your Apache (e.g. TI05BL06).',
+          );
+        } else {
+          _setStage(
+            ConnectionStage.error,
+            error:
+                'Could not resolve SmartXonnect characteristics on ${bike.name}. Please restart bike console and retry.',
+          );
+        }
         return;
       }
 
@@ -365,11 +492,13 @@ class BleConnectionManager extends ChangeNotifier {
       final msg = e.toString().toLowerCase();
       if (msg.contains('connection canceled') ||
           msg.contains('code: 10') ||
+          msg.contains('code: 133') ||
           msg.contains('timed out') ||
           msg.contains('timeout')) {
         _setStage(
           ConnectionStage.error,
-          error: 'Bike cluster unreachable. Please turn bike ignition ON (screen awake) and keep your phone near the bike.',
+          error:
+              'Bike cluster unreachable. Please turn bike ignition ON (screen awake) and keep your phone near the bike.',
         );
       } else {
         _setStage(ConnectionStage.error, error: 'Connection failed: $e');
@@ -489,8 +618,80 @@ class BleConnectionManager extends ChangeNotifier {
     return writeRawPacket(packet);
   }
 
+  Timer? _simulationTimer;
+  bool _isSimulating = false;
+  bool get isSimulating => _isSimulating;
+
+  /// Start a simulated TVS cluster session from your desk without needing the physical bike
+  void startSimulatedSession({String bikeName = 'TI05BL06 (Virtual Cluster)'}) {
+    disconnect(userInitiated: true);
+    _isSimulating = true;
+    _selectedBike = DiscoveredBike(
+      id: 'VIRTUAL_TVS_01',
+      name: bikeName,
+      rssi: -48,
+      adapter: TvsRtr200Adapter(),
+      isPaired: true,
+      isNearby: true,
+      isTvs: true,
+    );
+    _setStage(ConnectionStage.authenticated);
+    _setStage(ConnectionStage.streamingTelemetry);
+
+    int tick = 0;
+    _simulationTimer?.cancel();
+    _simulationTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
+      if (!_isSimulating) {
+        timer.cancel();
+        return;
+      }
+      tick++;
+      final speed = 35.0 + 25.0 * math.sin(tick * 0.1).abs();
+      final rpm = (3000 + 4000 * math.sin(tick * 0.1).abs()).toInt();
+      final gear = ((speed / 15).floor() + 1).clamp(1, 5);
+      final lean = 12.0 * math.sin(tick * 0.15);
+
+      final odo = 3420.0 + (tick * 0.01);
+      final batt = 14.1 + 0.2 * math.cos(tick * 0.1);
+
+      _telemetry = _telemetry.copyWith(
+        speedKmh: speed,
+        engineRpm: rpm,
+        gear: gear,
+        leanAngleDegrees: lean.round(),
+        accelerationG: 0.8 + 0.3 * math.sin(tick * 0.2),
+        engineTempC: 78.0 + 2.0 * math.sin(tick * 0.05),
+        batteryVoltage: batt,
+        fuelLevelPercent: 78,
+        odometerKm: odo,
+        frontTyrePsi: 28.5,
+        rearTyrePsi: 32.0,
+        timestamp: DateTime.now(),
+      );
+      TripRecorderService.instance.updateTelemetry(
+        speedKmh: speed,
+        odoKm: odo,
+        batteryV: batt,
+        fuelPct: 78,
+      );
+      notifyListeners();
+    });
+  }
+
+  void stopSimulatedSession() {
+    _isSimulating = false;
+    _simulationTimer?.cancel();
+    _simulationTimer = null;
+    _setStage(ConnectionStage.disconnected);
+  }
+
   /// Low-level write to characteristic 0x5352 with dual write-mode auto-adaptation
   Future<bool> writeRawPacket(Uint8List packet) async {
+    if (_isSimulating) {
+      // In simulation mode, accept all packets as successfully written to virtual cluster
+      return true;
+    }
+
     if (_commandCharacteristic == null) {
       return false;
     }
@@ -520,6 +721,11 @@ class BleConnectionManager extends ChangeNotifier {
 
   /// Disconnect cleanly
   Future<void> disconnect({bool userInitiated = true}) async {
+    if (_isSimulating) {
+      stopSimulatedSession();
+      return;
+    }
+
     await _telemetrySubscription?.cancel();
     await _connectionSubscription?.cancel();
     try {
