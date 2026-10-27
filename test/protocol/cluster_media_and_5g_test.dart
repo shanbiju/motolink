@@ -30,7 +30,7 @@ void main() {
 
       expect(packet.isNotEmpty, true);
       expect(packet[0], 0x5B, reason: 'Header byte must be 0x5B');
-      expect(packet.length, 7);
+      expect(packet.length, 20);
       expect(packet.last, 0xFF, reason: 'Trailer byte must be 0xFF');
     });
 

@@ -46,6 +46,7 @@ class BleConnectionManager extends ChangeNotifier {
   StreamSubscription<BluetoothConnectionState>? _connectionSubscription;
   StreamSubscription<List<int>>? _telemetrySubscription;
   StreamSubscription<BluetoothBondState>? _bondStateSubscription;
+  Timer? _handshakeWatchdog;
 
   // Auto-connect on ignition start settings
   static const String _prefBikeId = 'motolink_saved_bike_id';
@@ -534,7 +535,14 @@ class BleConnectionManager extends ChangeNotifier {
     }
   }
 
-  /// Finalize authentication and enable notifications on characteristic 0x5354
+  /// Finalize authentication, send rider name handshake to wake the cluster,
+  /// and enable notifications on characteristic 0x5354.
+  ///
+  /// **Connection Flow:**
+  /// 1. GATT bonded → stage = `authenticated`
+  /// 2. Send `[R` Rider Name handshake → stage = `handshaking`
+  /// 3. Wait for first real `0x5A` telemetry frame → stage = `streamingTelemetry`
+  /// 4. Start 5-second watchdog: if no telemetry arrives, warn the user
   Future<void> _finalizeAuthentication() async {
     try {
       _setStage(ConnectionStage.authenticated);
@@ -550,6 +558,40 @@ class BleConnectionManager extends ChangeNotifier {
         } catch (_) {}
       }
 
+      // ── Step 1: Send Rider Name Handshake (`[R`) to activate the cluster ──
+      // Without this packet, the cluster stays dormant despite a valid GATT connection.
+      // The cluster displays "HELLO RIDER" and begins streaming telemetry only after
+      // receiving this handshake on characteristic 0x5352.
+      _setStage(ConnectionStage.handshaking);
+
+      final riderName = _savedBikeName ?? 'MOTOLINK';
+      final handshakePacket = _adapter.buildRiderNamePacket(riderName);
+      final handshakeSent = await writeRawPacket(handshakePacket);
+      debugPrint('[BLE] Rider Name handshake sent: $handshakeSent (${handshakePacket.length} bytes)');
+
+      if (!handshakeSent && _commandCharacteristic != null) {
+        // If handshake write failed, the bond may be stale — try re-bonding
+        debugPrint('[BLE] Handshake write failed. Attempting re-bond...');
+        try {
+          await _connectedDevice?.createBond();
+          await Future.delayed(const Duration(milliseconds: 500));
+          // Retry handshake after re-bond
+          await writeRawPacket(handshakePacket);
+        } catch (e) {
+          debugPrint('[BLE] Re-bond attempt: $e');
+        }
+      }
+
+      // Also send initial phone status (battery + 5G signal bars)
+      try {
+        final phoneStatusPacket = _adapter.buildPhoneStatePacket(
+          batteryPercent: 100,
+          signalStrengthBars: 5,
+        );
+        await writeRawPacket(phoneStatusPacket);
+      } catch (_) {}
+
+      // ── Step 2: Subscribe to telemetry notifications ──
       if (_telemetryCharacteristic != null) {
         await _telemetryCharacteristic!.setNotifyValue(true);
         await _telemetrySubscription?.cancel();
@@ -580,8 +622,11 @@ class BleConnectionManager extends ChangeNotifier {
               );
             }
 
+            // ── Step 3: Only transition to streamingTelemetry once real data arrives ──
             if (_stage != ConnectionStage.streamingTelemetry) {
+              debugPrint('[BLE] First telemetry frame received! Cluster is LIVE.');
               _setStage(ConnectionStage.streamingTelemetry);
+              ClusterMediaService.instance.attachBleManager(this);
             } else {
               notifyListeners();
             }
@@ -589,12 +634,39 @@ class BleConnectionManager extends ChangeNotifier {
         });
       }
 
-      _setStage(ConnectionStage.streamingTelemetry);
-      ClusterMediaService.instance.attachBleManager(this);
+      // ── Step 4: Handshake watchdog ──
+      // If the cluster doesn't respond with telemetry within 5 seconds,
+      // warn the user instead of falsely showing "Connected".
+      _handshakeWatchdog?.cancel();
+      _handshakeWatchdog = Timer(const Duration(seconds: 5), () {
+        if (_stage == ConnectionStage.handshaking) {
+          debugPrint('[BLE] Handshake watchdog: no telemetry after 5s. Retrying handshake...');
+          // Retry the handshake one more time
+          final retryPacket = _adapter.buildRiderNamePacket(riderName);
+          writeRawPacket(retryPacket).then((success) {
+            if (!success) {
+              _setStage(
+                ConnectionStage.error,
+                error: 'Cluster console not responding. Turn ignition OFF, wait 5 seconds, turn ON and reconnect.',
+              );
+            }
+          });
+          // Give the retry another 5 seconds
+          _handshakeWatchdog = Timer(const Duration(seconds: 5), () {
+            if (_stage == ConnectionStage.handshaking) {
+              _setStage(
+                ConnectionStage.error,
+                error: 'Console did not respond to handshake. Please restart bike ignition and tap CONNECT again.',
+              );
+            }
+          });
+        }
+      });
     } catch (e) {
       _setStage(ConnectionStage.error, error: 'Failed to start telemetry stream: $e');
     }
   }
+
 
   /// Dispatch turn-by-turn navigation packet to motorcycle cluster
   Future<bool> dispatchNavigation(NavigationInstruction instruction) async {
@@ -728,6 +800,8 @@ class BleConnectionManager extends ChangeNotifier {
       return;
     }
 
+    _handshakeWatchdog?.cancel();
+    _handshakeWatchdog = null;
     await _telemetrySubscription?.cancel();
     await _connectionSubscription?.cancel();
     await _bondStateSubscription?.cancel();
@@ -817,6 +891,7 @@ class BleConnectionManager extends ChangeNotifier {
   @override
   void dispose() {
     _simulationTimer?.cancel();
+    _handshakeWatchdog?.cancel();
     _scanSubscription?.cancel();
     _connectionSubscription?.cancel();
     _telemetrySubscription?.cancel();

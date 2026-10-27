@@ -7,6 +7,7 @@ enum ConnectionStage {
   connecting,
   awaitingPin,
   authenticated,
+  handshaking,
   streamingTelemetry,
   reconnecting,
   error,
@@ -25,6 +26,8 @@ extension ConnectionStageExtension on ConnectionStage {
         return 'Awaiting Dynamic PIN';
       case ConnectionStage.authenticated:
         return 'Bonded & Authenticated';
+      case ConnectionStage.handshaking:
+        return 'Waking Cluster Console...';
       case ConnectionStage.streamingTelemetry:
         return 'Live Telemetry Active';
       case ConnectionStage.reconnecting:
@@ -36,8 +39,16 @@ extension ConnectionStageExtension on ConnectionStage {
 
   bool get isConnected =>
       this == ConnectionStage.authenticated ||
+      this == ConnectionStage.handshaking ||
+      this == ConnectionStage.streamingTelemetry;
+
+  /// True only when the cluster is actively streaming live telemetry data.
+  /// Use this instead of [isConnected] when you need confirmation that
+  /// the bike console has acknowledged the session.
+  bool get isLiveStreaming =>
       this == ConnectionStage.streamingTelemetry;
 }
+
 
 /// Discovered TVS motorcycle BLE peripheral
 class DiscoveredBike {

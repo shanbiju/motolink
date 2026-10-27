@@ -44,6 +44,11 @@ class TvsPacketBuilder {
     return clean.padRight(maxLength, ' ');
   }
 
+  /// Standard BLE MTU frame size expected by TVS cluster firmware.
+  /// All command packets must be padded to exactly this length:
+  /// [0x5B, opcode, ...16-byte payload/padding, checksum, 0xFF]
+  static const int tvsFrameSize = 20;
+
   /// Builds a complete encrypted, checksummed frame:
   /// `[0x5B, opcode, ...EncryptedPayload, Checksum, 0xFF]`
   static Uint8List buildFrame(int opcode, List<int> plainPayload) {
@@ -58,6 +63,27 @@ class TvsPacketBuilder {
 
     // 3. Append checksum and 0xFF end delimiter
     return TvsChecksum.appendChecksumAndTrailer(encryptedHeaderAndPayload);
+  }
+
+  /// Builds a fixed-size 20-byte encrypted, checksummed frame.
+  /// The TVS cluster firmware expects all command writes to characteristic
+  /// 0x5352 to be exactly 20 bytes. Payloads shorter than 16 bytes are
+  /// zero-padded; payloads longer are truncated.
+  /// Result: `[0x5B, opcode, ...16 encrypted bytes, checksum, 0xFF]`
+  static Uint8List buildFrame20(int opcode, List<int> plainPayload) {
+    // Fixed payload area = tvsFrameSize - 4 (header byte, opcode, checksum, trailer)
+    const payloadSlotSize = tvsFrameSize - 4; // 16 bytes
+
+    // 1. Pad or truncate payload to exactly payloadSlotSize
+    final paddedPayload = List<int>.filled(payloadSlotSize, 0);
+    final copyLen = plainPayload.length < payloadSlotSize
+        ? plainPayload.length
+        : payloadSlotSize;
+    for (var i = 0; i < copyLen; i++) {
+      paddedPayload[i] = plainPayload[i] & 0xFF;
+    }
+
+    return buildFrame(opcode, paddedPayload);
   }
 
   /// Builds a Turn-by-Turn navigation instruction packet (Opcode 0x01).
@@ -94,7 +120,12 @@ class TvsPacketBuilder {
     return buildFrame(opcode, textBytes);
   }
 
-  /// Builds a phone status packet (Opcode 0x05): Battery level & Signal strength bars.
+  /// Builds a phone status packet (Opcode 0x4A / 'J').
+  ///
+  /// Disassembled from `BlePacketsProvider.sendApacheMobileData`:
+  /// The cluster firmware expects opcode 0x4A with the phone battery,
+  /// network signal bars, and notification flags packed into a 20-byte frame.
+  /// The old opcode 0x05 was silently discarded by the cluster firmware.
   static Uint8List buildPhoneStatePacket({
     required int batteryPercent,
     required int signalStrengthBars, // 0 to 5 bars
@@ -113,6 +144,31 @@ class TvsPacketBuilder {
       flags,
     ];
 
-    return buildFrame(0x05, payload);
+    return buildFrame20(0x4A, payload);
+  }
+
+  /// Builds the Rider Name handshake packet (Opcode 0x52 / 'R').
+  ///
+  /// Disassembled from `BluetoothUtil.createRiderNameArray`:
+  /// This is the **critical connection handshake**. When the cluster receives
+  /// `[0x5B, 0x52, ...riderNameBytes..., padding, checksum, 0xFF]`,
+  /// it activates the Bluetooth icon on the speedometer LCD, displays
+  /// "HELLO RIDER", and begins streaming live 10 Hz telemetry frames.
+  ///
+  /// Without this packet, the cluster remains dormant despite a valid
+  /// BLE GATT connection — the app shows "Connected" but the bike
+  /// doesn't know a session has started.
+  ///
+  /// Frame structure (20 bytes total):
+  /// [0x5B, 0x52, riderName[0..16], padding, checksum, 0xFF]
+  static Uint8List buildRiderNamePacket(String riderName) {
+    // Sanitize: the cluster LCD only supports ASCII alphanumeric + space
+    final sanitized = sanitizeForLcd(riderName, maxLength: 14);
+    final nameBytes = ascii.encode(sanitized);
+
+    // Payload: rider name bytes (up to 14 chars, zero-padded to 16 slots)
+    final payload = <int>[...nameBytes];
+
+    return buildFrame20(0x52, payload);
   }
 }

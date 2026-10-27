@@ -58,10 +58,9 @@ class _MainNavigationShellState extends ConsumerState<MainNavigationShell> {
     final stage = ref.watch(connectionStageProvider);
 
     // Auto-switch to Cockpit and trigger cinematic "MOTOLINK LINK CONNECTED" animation
+    // ONLY when real telemetry frames start streaming from the cluster
     ref.listen<ConnectionStage>(connectionStageProvider, (prev, next) {
-      if ((next == ConnectionStage.authenticated ||
-              next == ConnectionStage.streamingTelemetry) &&
-          prev != next) {
+      if (next == ConnectionStage.streamingTelemetry && prev != next) {
         final bikeName = ref.read(bleManagerProvider).selectedBike?.name ??
             ref.read(bleManagerProvider).savedBikeName ??
             'TVS APACHE RTR 200 4V';

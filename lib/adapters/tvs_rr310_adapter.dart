@@ -1,14 +1,13 @@
 import 'dart:convert';
 import 'dart:typed_data';
-import '../core/protocol/frame_parser.dart';
 import '../core/protocol/packet_builder.dart';
 import '../features/navigation/navigation_models.dart';
 import '../features/telemetry/telemetry_models.dart';
+import 'tvs_rtr200_adapter.dart';
 import 'vehicle_adapter.dart';
 
 /// Concrete Hardware Adapter for TVS Apache RR 310 / RTR 310 (N597 TFT Cluster).
 class TvsRr310Adapter implements VehicleAdapter {
-  final TvsFrameParser _frameParser = TvsFrameParser();
 
   @override
   String get modelName => 'TVS Apache RR 310 (TFT)';
@@ -41,42 +40,12 @@ class TvsRr310Adapter implements VehicleAdapter {
   @override
   bool get isSegmentedLcd => false;
 
+  final TvsRtr200Adapter _telemetryDecoder = TvsRtr200Adapter();
+
   @override
   TelemetryData parseTelemetry(Uint8List rawBytes, TelemetryData current) {
-    try {
-      final frames = _frameParser.feed(rawBytes);
-      var state = current;
-      for (final frame in frames) {
-        // RR 310 uses identical base telemetry framing with extended widget metadata
-        final payload = frame.plainPayload;
-        if (frame.opcode == 0x10 && payload.length >= 14) {
-          state = state.copyWith(
-            speedKmh: payload[0].toDouble(),
-            engineRpm: (payload[1] << 8) | payload[2],
-            odometerKm: ((payload[3] << 16) | (payload[4] << 8) | payload[5]).toDouble(),
-            timestamp: DateTime.now(),
-          );
-        } else if (frame.opcode == 0x11 && payload.length >= 9) {
-          state = state.copyWith(
-            gear: payload[0].clamp(0, 6),
-            engineTempC: payload[1].toDouble(),
-            batteryVoltage: payload[2] / 10.0,
-            timestamp: DateTime.now(),
-          );
-        } else if (frame.opcode == 0x12 && payload.length >= 9) {
-          final rawAngle = payload[0];
-          state = state.copyWith(
-            leanAngleDegrees: rawAngle > 127 ? rawAngle - 256 : rawAngle,
-            accelerationG: payload[1] / 100.0,
-            distanceToEmptyKm: (payload[2] << 8) | payload[3],
-            timestamp: DateTime.now(),
-          );
-        }
-      }
-      return state;
-    } catch (_) {
-      return current;
-    }
+    // TVS RR 310 / RTR 310 uses the unified TVS Apache cluster protocol
+    return _telemetryDecoder.parseTelemetry(rawBytes, current);
   }
 
   @override
@@ -121,5 +90,10 @@ class TvsRr310Adapter implements VehicleAdapter {
       hasMissedCall: hasMissedCall,
       hasSms: hasSms,
     );
+  }
+
+  @override
+  Uint8List buildRiderNamePacket(String riderName) {
+    return TvsPacketBuilder.buildRiderNamePacket(riderName);
   }
 }

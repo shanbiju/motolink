@@ -13,10 +13,14 @@ void main() {
     });
 
     Uint8List makeTestFrame(int startByte, int opcode, List<int> plainPayload) {
-      final encryptedPayload = TvsCipher.cryptPayload(plainPayload);
+      final padded = List<int>.filled(16, 0);
+      for (int i = 0; i < plainPayload.length && i < 16; i++) {
+        padded[i] = plainPayload[i];
+      }
+      final encryptedPayload = TvsCipher.cryptPayload(padded);
       final rawBeforeChecksum = [startByte, opcode, ...encryptedPayload];
       final checksum = TvsChecksum.compute(rawBeforeChecksum);
-      return Uint8List.fromList([...rawBeforeChecksum, checksum, 0xFF]);
+      return Uint8List.fromList([...rawBeforeChecksum, checksum, 0x0D]);
     }
 
     test('Parses complete single frame successfully', () {
@@ -27,7 +31,7 @@ void main() {
       expect(frames.length, equals(1));
       expect(frames[0].startByte, equals(0x5A));
       expect(frames[0].opcode, equals(0x10));
-      expect(frames[0].plainPayload, equals(Uint8List.fromList(plainPayload)));
+      expect(frames[0].plainPayload.sublist(0, 3), equals(Uint8List.fromList(plainPayload)));
     });
 
     test('Handles fragmented packets across multiple stream chunks', () {
@@ -48,7 +52,7 @@ void main() {
       frames = parser.feed(chunk3);
       expect(frames.length, equals(1));
       expect(frames[0].opcode, equals(0x11));
-      expect(frames[0].plainPayload, equals(Uint8List.fromList(plainPayload)));
+      expect(frames[0].plainPayload.sublist(0, 5), equals(Uint8List.fromList(plainPayload)));
     });
 
     test('Handles multiple back-to-back frames in a single chunk', () {
@@ -73,7 +77,7 @@ void main() {
       final frames = parser.feed(noisyStream);
       expect(frames.length, equals(1));
       expect(frames[0].opcode, equals(0x10));
-      expect(frames[0].plainPayload, equals(Uint8List.fromList([0x77, 0x88])));
+      expect(frames[0].plainPayload.sublist(0, 2), equals(Uint8List.fromList([0x77, 0x88])));
     });
 
     test('Rejects frame with corrupted checksum and continues parsing next valid frame', () {
@@ -88,7 +92,7 @@ void main() {
 
       expect(frames.length, equals(1));
       expect(frames[0].opcode, equals(0x12));
-      expect(frames[0].plainPayload, equals(Uint8List.fromList([0x99])));
+      expect(frames[0].plainPayload.sublist(0, 1), equals(Uint8List.fromList([0x99])));
     });
 
     test('Buffer overflow protection discards runaway garbage', () {

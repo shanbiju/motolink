@@ -15,35 +15,43 @@ void main() {
     });
 
     Uint8List buildEncryptedFrame(int startByte, int opcode, List<int> plainPayload) {
-      final encryptedPayload = TvsCipher.cryptPayload(plainPayload);
+      final padded = List<int>.filled(16, 0);
+      for (int i = 0; i < plainPayload.length && i < 16; i++) {
+        padded[i] = plainPayload[i];
+      }
+      final encryptedPayload = TvsCipher.cryptPayload(padded);
       final rawBeforeChecksum = [startByte, opcode, ...encryptedPayload];
       final checksum = TvsChecksum.compute(rawBeforeChecksum);
-      return Uint8List.fromList([...rawBeforeChecksum, checksum, 0xFF]);
+      return Uint8List.fromList([...rawBeforeChecksum, checksum, 0x0D]);
     }
 
     test('Decodes Frame 0x5A 0x10 (Speed, RPM, Odo, Fuel, 0-60)', () {
-      // Plain Payload layout:
+      // Ground truth layout:
       // Byte 0: Speed (54 km/h)
-      // Byte 1-2: RPM = 5800 (0x16A8 -> 0x16, 0xA8)
-      // Byte 3-5: Odo = 12500 km (0x0030D4 -> 0x00, 0x30, 0xD4)
-      // Byte 6: Top Speed (118 km/h)
-      // Byte 7: Avg Speed (46 km/h)
-      // Byte 8: Mileage (38 km/L)
-      // Byte 9: Throttle (42%)
-      // Byte 10: Fuel Level (85%)
-      // Byte 11-12: 0-60 time = 3950 ms (0x0F6E -> 0x0F, 0x6E)
-      // Byte 13: Trip F = 15 (1.5 km)
+      // Byte 1-3: Odo = 12500 km (0x0030D4 -> 0x00, 0x30, 0xD4)
+      // Byte 4: Fuel Level (85%)
+      // Byte 5: Avg Speed (46 km/h)
+      // Byte 6: Mileage (38 km/L)
+      // Byte 7: Top Speed (118 km/h)
+      // Byte 8: Throttle (42%)
+      // Byte 9: SwitchStatus (0)
+      // Byte 10: 0-60 time = 39 (3900 ms)
+      // Byte 11: Direct mileage (0)
+      // Byte 12-13: Trip F = 15 (1.5 km)
+      // Byte 14-15: RPM = 5800 (0x16A8 -> 0x16, 0xA8)
       final plain = [
         54,
-        0x16, 0xA8,
         0x00, 0x30, 0xD4,
-        118,
+        85,
         46,
         38,
+        118,
         42,
-        85,
-        0x0F, 0x6E,
-        15,
+        0,
+        39,
+        0,
+        0x00, 15,
+        0x16, 0xA8,
       ];
 
       final rawPacket = buildEncryptedFrame(0x5A, 0x10, plain);
@@ -58,34 +66,39 @@ void main() {
       expect(updated.instantMileageKml, equals(38.0));
       expect(updated.throttlePercent, equals(42));
       expect(updated.fuelLevelPercent, equals(85));
-      expect(updated.zeroToSixtyMs, equals(3950));
+      expect(updated.zeroToSixtyMs, equals(3900));
       expect(updated.tripFMeterKm, equals(1.5));
     });
 
     test('Decodes Frame 0x5A 0x11 (Gear, Temp, Battery, Mode, Switches Bitmask)', () {
-      // Plain Payload layout:
-      // Byte 0: Gear = 4
-      // Byte 1: Temp = 82°C
-      // Byte 2: Battery = 142 (14.2V)
-      // Byte 3: SwVersion = 2
-      // Byte 4: RideMode = 1 (Sport)
-      // Byte 5: StateFlags (Bit 0: SideStand=1, Bit 1: Clutch=1, Bit 2: Brake=0, Bit 3: Start=0, Bit 4: Kill=1)
-      //         0x01 | 0x02 | 0x10 = 0x13
-      // Byte 6: TurnFlags (Bit 0: Left=1, Bit 1: Right=0) = 0x01
-      // Byte 7: Diag = 1 (ABS MIL active)
-      // Byte 8: Reserved = 0
-      const stateFlags = (1 << 0) | (1 << 1) | (1 << 4); // Side stand, Clutch, Kill switch
+      // Ground truth layout:
+      // Byte 0: vehicleDirection2 = 0
+      // Byte 1: StateFlags (Bit 0: SideStand=1, Bit 2: Clutch=1, Bit 5: Kill=1) = 0x25
+      // Byte 2: serviceReminder = 0
+      // Byte 3: Gear = 4
+      // Byte 4: Battery = 142 (14.2V)
+      // Byte 5: SwVersion = 2
+      // Byte 6: Diag / ABS MIL = 1
+      // Byte 7-9: 0
+      // Byte 10: TurnFlags (Bit 0: Left=1) = 0x01
+      // Byte 11: Temp = 107 (107 - 25 = 82°C)
+      // Byte 12-14: 0
+      // Byte 15: RideMode = 1 (Sport)
+      const stateFlags = (1 << 0) | (1 << 2) | (1 << 5); // Side stand, Clutch, Kill switch
       const turnFlags = (1 << 0); // Left turn
       final plain = [
+        0,
+        stateFlags,
+        0,
         4,
-        82,
         142,
         2,
-        1, // Sport
-        stateFlags,
-        turnFlags,
         1, // Diag
-        0,
+        0, 0, 0,
+        turnFlags,
+        107, // 107 - 25 = 82 C
+        0, 0, 0,
+        1, // Sport
       ];
 
       final rawPacket = buildEncryptedFrame(0x5A, 0x11, plain);
@@ -106,20 +119,27 @@ void main() {
     });
 
     test('Decodes Frame 0x5A 0x12 (Lean Angle, G-Force, DTE, Trip Distance)', () {
+      // Ground truth layout:
       // Byte 0: Lean Angle = -24° (Left lean: 256 - 24 = 232 = 0xE8)
-      // Byte 1: Acceleration G = 65 (0.65 G)
-      // Byte 2-3: DTE = 195 km (0x00C3 -> 0x00, 0xC3)
-      // Byte 4: Instant Torque = 16 Nm
-      // Byte 5-6: Trip Distance = 28.5 km (285 -> 0x011D -> 0x01, 0x1D)
-      // Byte 7: Trip Hours = 1
-      // Byte 8: Trip Mins = 12
+      // Byte 1-2: DTE = 195 km (0x00C3 -> 0x00, 0xC3)
+      // Byte 3: WheelAngleOffset = 0
+      // Byte 4: Acceleration G = 65 (0.65 G)
+      // Byte 5: Instant Torque = 16 Nm
+      // Byte 6-7: Trip Distance = 28.5 km (285 -> 0x011D -> 0x01, 0x1D)
+      // Byte 8: Trip Hours = 1
+      // Byte 9: Trip Mins = 12
+      // Byte 10: Trip Mileage = 0
+      // Byte 11-12: Trip Fuel = 0
       final plain = [
         0xE8, // -24 signed
-        65,   // 0.65 G
         0x00, 0xC3,
+        0,
+        65,   // 0.65 G
         16,
         0x01, 0x1D,
         1, 12,
+        0,
+        0, 0,
       ];
 
       final rawPacket = buildEncryptedFrame(0x5A, 0x12, plain);

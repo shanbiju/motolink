@@ -107,59 +107,109 @@ class TvsRtr200Adapter implements VehicleAdapter {
     }
   }
 
-  /// Parses Frame 0x5A 0x10 (Speedometer 1: Speed, RPM, Odo, Fuel, 0-60 Time, Handlebar i-Button)
+  /// Parses Frame 0x5A 0x10 (Speedometer 1: Speed, Odo, Fuel, AvgSpeed, Mileage, TopSpeed, Throttle, i-Button, 0-60, TripF, RPM)
   TelemetryData _parseFrame5A10(Uint8List payload, TelemetryData current) {
-    if (payload.length < 14) return current;
+    if (payload.length < 16) return current;
 
+    // Ground truth from Lcom/tvs/bike/core/protocol/apache/ApacheSpeedOMeter1 & U399SpeedMeter1:
+    // payload[0]    (start 3): speed
+    // payload[1..3] (start 4, len 3): odometer (24-bit Big-Endian)
+    // payload[4]    (start 7): fuelLevel (0-100 or 7-bit)
+    // payload[5]    (start 8): averageSpeed
+    // payload[6]    (start 9): mileage / economyStatus
+    // payload[7]    (start 10): topSpeed
+    // payload[8]    (start 11): throttle
+    // payload[9]    (start 12): locationTag / switchStatus (i-Button & Call accept/reject)
+    // payload[10]   (start 13): zeroTo60Time (0.1s increments or raw ms)
+    // payload[11]   (start 14): averageMileageDirect
+    // payload[12..13] (start 15, len 2): tripFMeter (0.1 km increments)
+    // payload[14..15] (start 17, len 2): engineRpm (16-bit Big-Endian)
     final speed = payload[0].toDouble();
-    final rpm = (payload[1] << 8) | payload[2];
-    final odo = ((payload[3] << 16) | (payload[4] << 8) | payload[5]).toDouble();
-    final topSpeed = payload[6].toDouble();
-    final avgSpeed = payload[7].toDouble();
-    final instantMileage = payload[8].toDouble();
-    final throttle = payload[9];
-    final rawByte10 = payload[10];
-    final fuelLevel = rawByte10 & 0x7F;
-    final isVoiceAssist = (rawByte10 & 0x20) != 0;
-    
-    // In TVS U399/U400: Byte 11 contains zero-to-sixty timer high bits,
-    // and during call/switch events carries callAcceptRejectStatus:
-    // 1 = Accept / Short press, 2 = Reject / Cancel / i-Button long press
-    final callStatus = (payload[11] == 1 || payload[11] == 2) ? payload[11] : 0;
-    final isIButtonPressed = (callStatus == 2 || callStatus == 1 || isVoiceAssist);
-    final zeroToSixty = (payload[11] << 8) | payload[12];
-    final tripF = payload.length > 13 ? payload[13] / 10.0 : current.tripFMeterKm;
+    final odo = ((payload[1] << 16) | (payload[2] << 8) | payload[3]).toDouble();
+    final fuelLevel = (payload[4] & 0x7F).clamp(0, 100);
+    final avgSpeed = payload[5].toDouble();
+    final instantMileage = payload[6].toDouble();
+    final topSpeed = payload[7].toDouble();
+    final throttle = payload[8].clamp(0, 100);
+
+    // Byte 9 contains handlebar switch status & voice assist flag:
+    // 1 = Call Accept / Short Press, 2 = Call Reject / Long Press / i-Button
+    final switchByte = payload[9];
+    final callStatus = (switchByte == 1 || switchByte == 2) ? switchByte : 0;
+    final isVoiceAssist = (switchByte & 0x20) != 0;
+    final isIButtonPressed = (callStatus == 1 || callStatus == 2 || isVoiceAssist);
+
+    final zeroToSixty = payload[10] * 100; // converted to ms
+    final tripF = ((payload[12] << 8) | payload[13]) / 10.0;
+    final rpm = (payload[14] << 8) | payload[15];
 
     return current.copyWith(
       speedKmh: speed,
-      engineRpm: rpm,
       odometerKm: odo > 0 ? odo : current.odometerKm,
-      topSpeedKmh: topSpeed > current.topSpeedKmh ? topSpeed : current.topSpeedKmh,
+      fuelLevelPercent: fuelLevel,
       averageSpeedKmh: avgSpeed,
       instantMileageKml: instantMileage,
-      throttlePercent: throttle.clamp(0, 100),
-      fuelLevelPercent: fuelLevel.clamp(0, 100),
+      topSpeedKmh: topSpeed > current.topSpeedKmh ? topSpeed : current.topSpeedKmh,
+      throttlePercent: throttle,
       callAcceptRejectStatus: callStatus,
       isVoiceAssistInvoked: isVoiceAssist,
       isIButtonPressed: isIButtonPressed,
       zeroToSixtyMs: zeroToSixty,
       tripFMeterKm: tripF,
+      engineRpm: rpm,
       timestamp: DateTime.now(),
     );
   }
 
-  /// Parses Frame 0x5A 0x11 (Speedometer 2: Gear, Temp, Voltage, Ride Mode, Switches)
+  /// Parses Frame 0x5A 0x11 (Speedometer 2: Vehicle State, Gear, Battery Voltage, Engine Temp, Ride Mode)
   TelemetryData _parseFrame5A11(Uint8List payload, TelemetryData current) {
-    if (payload.length < 9) return current;
+    if (payload.length < 16) return current;
 
-    final gear = payload[0];
-    // Engine Temp: raw byte in °C (offset checked in TVS Connect)
-    final engineTemp = payload[1].toDouble();
-    final voltage = payload[2] > 0 ? payload[2] / 10.0 : current.batteryVoltage;
-    final swVersion = payload[3];
+    // Ground truth from Lcom/tvs/bike/core/protocol/apache/ApacheSpeedOMeter2 & U399SpeedMeter2:
+    // payload[0]  (start 3): vehicleDirection2 / fuelSensor
+    // payload[1]  (start 4): vehicleState1
+    // payload[2]  (start 5): serviceReminder
+    // payload[3]  (start 6): gearPosition (0 = N, 1-6 = Gears)
+    // payload[4]  (start 7): batteryVoltage (0.1 V increments, e.g. 124 = 12.4V)
+    // payload[5]  (start 8): softwareVersion
+    // payload[6]  (start 9): milBlinkCode / reserve1
+    // payload[7]  (start 10): vehicleModel / reserve2
+    // payload[8]  (start 11): vehicleDiagnostics
+    // payload[9]  (start 12): reserve3
+    // payload[10] (start 13): turnIndicatorStatus (Bit 0: Left, Bit 1: Right)
+    // payload[11] (start 14): engineTemperature (Offset 25: raw >= 25 ? raw - 25 : 0)
+    // payload[12] (start 15): intakeAirTemperature / screenMatrix
+    // payload[13..14] (start 16): vehicleState3 / fuelInjectionTime
+    // payload[14] (start 17): absMilBlinkCode
+    // payload[15] (start 18): vehicleMode (0 = Urban, 1 = Sport, 2 = Rain, 3 = Track)
 
-    // Ride Mode: 0=Urban, 1=Sport, 2=Rain, 3=Track
-    final modeByte = payload[4];
+    // Vehicle State 1 Bitmask (from ApacheClusterDataReceiver.bitAtGivenPosSetOrUnset):
+    final stateFlags = payload[1];
+    final sideStandDown = (stateFlags & (1 << 0)) != 0;
+    final sideStandSensor = (stateFlags & (1 << 1)) != 0;
+    final clutchPulled = (stateFlags & (1 << 2)) != 0;
+    final brakeActive = (stateFlags & (1 << 3)) != 0;
+    final electricStart = (stateFlags & (1 << 4)) != 0;
+    final killSwitchActive = (stateFlags & (1 << 5)) != 0;
+
+    final gear = payload[3].clamp(0, 6);
+    final voltage = payload[4] > 0 ? payload[4] / 10.0 : current.batteryVoltage;
+    final swVersion = payload[5];
+
+    // Diagnostics / ABS MIL blink codes from payload[6] and payload[14]
+    final absMil = payload[6] != 0 || payload[14] != 0;
+
+    // Turn indicator status from payload[10]
+    final turnFlags = payload[10];
+    final leftSignal = (turnFlags & (1 << 0)) != 0;
+    final rightSignal = (turnFlags & (1 << 1)) != 0;
+
+    // Engine temperature from payload[11] with TVS 25-degree offset calibration
+    final rawTemp = payload[11];
+    final engineTemp = rawTemp >= 25 ? (rawTemp - 25).toDouble() : 0.0;
+
+    // Ride Mode from payload[15]
+    final modeByte = payload[15];
     RideMode mode;
     switch (modeByte) {
       case 0:
@@ -178,35 +228,13 @@ class TvsRtr200Adapter implements VehicleAdapter {
         mode = current.rideMode;
     }
 
-    // Vehicle State 1 Bitmask (Disassembled from bitAtGivenPosSetOrUnset in TVS Connect):
-    // Bit 0: Side stand down
-    // Bit 1: Clutch pulled
-    // Bit 2: Brake active
-    // Bit 3: Electric start switch
-    // Bit 4: Engine kill switch
-    final stateFlags = payload[5];
-    final sideStandDown = (stateFlags & (1 << 0)) != 0;
-    final clutchPulled = (stateFlags & (1 << 1)) != 0;
-    final brakeActive = (stateFlags & (1 << 2)) != 0;
-    final electricStart = (stateFlags & (1 << 3)) != 0;
-    final killSwitchActive = (stateFlags & (1 << 4)) != 0;
-
-    // Turn signal lamp status
-    final turnFlags = payload[6];
-    final leftSignal = (turnFlags & (1 << 0)) != 0;
-    final rightSignal = (turnFlags & (1 << 1)) != 0;
-
-    // Diagnostics / ABS MIL blink codes
-    final diagByte = payload[7];
-    final absMil = diagByte != 0;
-
     return current.copyWith(
-      gear: gear.clamp(0, 6),
-      engineTempC: engineTemp,
+      gear: gear,
       batteryVoltage: voltage,
       clusterSoftwareVersion: swVersion,
+      engineTempC: engineTemp,
       rideMode: mode,
-      isSideStandDown: sideStandDown,
+      isSideStandDown: sideStandDown || sideStandSensor,
       isClutchPulled: clutchPulled,
       isBrakeActive: brakeActive,
       isElectricStartActive: electricStart,
@@ -218,58 +246,75 @@ class TvsRtr200Adapter implements VehicleAdapter {
     );
   }
 
-  /// Parses Frame 0x5A 0x12 (Speedometer 3: Lean Angle, G-Force, DTE, Trip Distance)
+  /// Parses Frame 0x5A 0x12 (Speedometer 3: Lean Angle, G-Force, DTE, Torque, Trip Distance, Trip Time)
   TelemetryData _parseFrame5A12(Uint8List payload, TelemetryData current) {
-    if (payload.length < 9) return current;
+    if (payload.length < 13) return current;
 
-    // Lean angle: signed byte or offset (positive = right, negative = left)
+    // Ground truth from Lcom/tvs/bike/core/protocol/apache/ApacheSpeedOMeter3 & U399SpeedMeter3:
+    // payload[0]    (start 3): leanAngle (signed 8-bit: > 127 ? raw - 256 : raw)
+    // payload[1..2] (start 4, len 2): cruisingRange / Distance to Empty (DTE) in km
+    // payload[3]    (start 6): wheelAngelOffset
+    // payload[4]    (start 7): acceleration / G-Force (raw / 100.0)
+    // payload[5]    (start 8): torque (Nm)
+    // payload[6..7] (start 9, len 2): tripDistance (0.1 km increments)
+    // payload[8]    (start 11): tripTimeHour
+    // payload[9]    (start 12): tripTimeMin
+    // payload[10]   (start 13): tripMileage
+    // payload[11..12] (start 14, len 2): tripFuel (0.1 L increments)
     final rawAngle = payload[0];
     final leanAngle = rawAngle > 127 ? rawAngle - 256 : rawAngle;
 
-    // Acceleration / G-Force (raw / 100.0)
-    final accelG = payload[1] / 100.0;
+    final dte = (payload[1] << 8) | payload[2];
+    final accelG = payload[4] / 100.0;
+    final torque = payload[5].toDouble();
+    final tripDist = ((payload[6] << 8) | payload[7]) / 10.0;
 
-    // Cruising Range / Distance to Empty (DTE) in km
-    final dte = (payload[2] << 8) | payload[3];
-
-    // Instant Torque (Nm)
-    final torque = payload[4].toDouble();
-
-    // Trip distance (0.1 km increments)
-    final tripDist = ((payload[5] << 8) | payload[6]) / 10.0;
-
-    // Trip duration (minutes)
-    final tripHours = payload[7];
-    final tripMins = payload[8];
+    final tripHours = payload[8];
+    final tripMins = payload[9];
     final duration = Duration(hours: tripHours, minutes: tripMins);
+
+    final tripFuel = ((payload[11] << 8) | payload[12]) / 10.0;
 
     return current.copyWith(
       leanAngleDegrees: leanAngle,
-      accelerationG: accelG,
       distanceToEmptyKm: dte,
+      accelerationG: accelG,
       instantTorqueNm: torque,
       tripDistanceKm: tripDist,
       tripDuration: duration,
+      tripFuelLiters: tripFuel,
       timestamp: DateTime.now(),
     );
   }
 
-  /// Parses Frame 0x5A 0x16 (Speedometer 4: Lap Trigger & Lap Times)
+  /// Parses Frame 0x5A 0x16 (Speedometer 4: Lap Telemetry & Lap Times)
   TelemetryData _parseFrame5A16(Uint8List payload, TelemetryData current) {
     if (payload.length < 9) return current;
 
-    final lapTrigger = payload[0] == 0x01;
-    final lapNum = payload[1];
-    final lapMin = payload[2];
-    final lapSec = payload[3];
-    final lapMs = payload[4] * 10;
+    // Ground truth from Lcom/tvs/bike/core/protocol/apache/ApacheSpeedOMeter4:
+    // payload[0] (start 3): lapTimeMin
+    // payload[1] (start 4): lapTimeSec
+    // payload[2] (start 5): lapTimeMSec
+    // payload[3] (start 6): lapNumber
+    // payload[4] (start 7): bestLapMin
+    // payload[5] (start 8): bestLapSeconds
+    // payload[6] (start 9): bestLapMilliSeconds
+    // payload[7] (start 10): bestLapNumber
+    // payload[8] (start 11): lapTrigger (0x01 = triggered)
+    final lapMin = payload[0];
+    final lapSec = payload[1];
+    final lapMs = payload[2] * 10;
     final lapDuration = Duration(minutes: lapMin, seconds: lapSec, milliseconds: lapMs);
 
-    final bestLapNum = payload[5];
-    final bestMin = payload[6];
-    final bestSec = payload[7];
-    final bestMs = payload[8] * 10;
+    final lapNum = payload[3];
+
+    final bestMin = payload[4];
+    final bestSec = payload[5];
+    final bestMs = payload[6] * 10;
     final bestDuration = Duration(minutes: bestMin, seconds: bestSec, milliseconds: bestMs);
+
+    final bestLapNum = payload[7];
+    final lapTrigger = payload[8] == 0x01;
 
     return current.copyWith(
       isLapTriggered: lapTrigger,
@@ -283,15 +328,25 @@ class TvsRtr200Adapter implements VehicleAdapter {
 
   /// Parses Frame 0x5A 0x18 (Speedometer 5: Engine Diagnostics)
   TelemetryData _parseFrame5A18(Uint8List payload, TelemetryData current) {
-    if (payload.length < 6) return current;
+    if (payload.length < 12) return current;
 
-    final intakeAirTemp = payload[0] - 40; // Standard OBD/CAN temp offset
-    final manifoldPressure = ((payload[1] << 8) | payload[2]) / 1000.0;
-    final runTimeSec = (payload[3] << 16) | (payload[4] << 8) | payload[5];
+    // Ground truth from Lcom/tvs/bike/core/protocol/apache/ApacheSpeedOMeter5:
+    // payload[0]    (start 3): engineLoad
+    // payload[1..2] (start 4, len 2): accumulatedFuelInjectionTime
+    // payload[3]    (start 6): manifoldAirPressure (0.01 bar or kPa)
+    // payload[4]    (start 7): barometricPressure
+    // payload[5]    (start 8): intakeAirTemperature (OBD offset: raw - 40)
+    // payload[6]    (start 9): engineTemperature (TVS offset: raw >= 25 ? raw - 25 : 0)
+    // payload[7..8] (start 10, len 2): fuelInjectionTime
+    // payload[9]    (start 12): batteryVoltage (raw / 10.0)
+    // payload[10..11] (start 13, len 2): runTimeSinceEngineStart (seconds)
+    final manifoldPressure = payload[3] / 100.0;
+    final intakeAirTemp = payload[5] - 40;
+    final runTimeSec = (payload[10] << 8) | payload[11];
 
     return current.copyWith(
       intakeAirTempC: intakeAirTemp,
-      manifoldPressureBar: manifoldPressure,
+      manifoldPressureBar: manifoldPressure > 0 ? manifoldPressure : current.manifoldPressureBar,
       engineRunTime: Duration(seconds: runTimeSec),
       timestamp: DateTime.now(),
     );
@@ -331,5 +386,10 @@ class TvsRtr200Adapter implements VehicleAdapter {
       hasMissedCall: hasMissedCall,
       hasSms: hasSms,
     );
+  }
+
+  @override
+  Uint8List buildRiderNamePacket(String riderName) {
+    return TvsPacketBuilder.buildRiderNamePacket(riderName);
   }
 }

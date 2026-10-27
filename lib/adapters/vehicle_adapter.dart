@@ -45,4 +45,9 @@ abstract class VehicleAdapter {
     bool hasMissedCall = false,
     bool hasSms = false,
   });
+
+  /// Builds the Rider Name handshake packet that wakes the cluster.
+  /// This MUST be written to the command characteristic immediately after
+  /// GATT service discovery to activate the cluster's Bluetooth session.
+  Uint8List buildRiderNamePacket(String riderName);
 }

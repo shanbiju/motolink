@@ -227,6 +227,10 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
         bannerIcon = Icons.dialpad;
         break;
       case ConnectionStage.authenticated:
+      case ConnectionStage.handshaking:
+        bannerColor = AppColors.warning;
+        bannerIcon = Icons.sync_problem;
+        break;
       case ConnectionStage.streamingTelemetry:
         bannerColor = AppColors.accent;
         bannerIcon = Icons.bluetooth_connected;
@@ -294,7 +298,9 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
               ],
             ),
           ),
-          if (bleManager.stage == ConnectionStage.connecting || bleManager.stage == ConnectionStage.reconnecting)
+          if (bleManager.stage == ConnectionStage.connecting ||
+              bleManager.stage == ConnectionStage.reconnecting ||
+              bleManager.stage == ConnectionStage.handshaking)
             const SizedBox(
               width: 20,
               height: 20,
