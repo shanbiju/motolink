@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -298,41 +297,41 @@ class BleConnectionManager extends ChangeNotifier {
       // Ensure any previous connection listener is cleaned up before connecting
       await _connectionSubscription?.cancel();
 
-      await device.connect(
-        license: License.nonprofit,
-        timeout: const Duration(seconds: 15),
-        autoConnect: false,
-        mtu: null,
-      );
+      // Retry connection up to 3 times to gracefully recover from Android Error 133
+      int attempts = 0;
+      bool connected = false;
+      Object? lastError;
 
-      // Track connection state ONLY after connection is successfully established
-      _connectionSubscription = device.connectionState.listen((state) {
-        if (state == BluetoothConnectionState.disconnected &&
-            _stage != ConnectionStage.disconnected) {
-          _handleDisconnection();
-        }
-      });
-
-      // Clear Android GATT cache to prevent stale handles from previous pairings
-      if (!kIsWeb && Platform.isAndroid) {
+      while (!connected && attempts < 3) {
+        attempts++;
         try {
-          await device.clearGattCache();
+          debugPrint('[BLE] Connecting to ${bike.name} (attempt $attempts/3)...');
+          await device.connect(
+            license: License.nonprofit,
+            timeout: const Duration(seconds: 12),
+            autoConnect: false,
+            mtu: null,
+          );
+          connected = true;
+          debugPrint('[BLE] Connected to ${bike.name} successfully on attempt $attempts');
         } catch (e) {
-          debugPrint('[BLE] clearGattCache notice: $e');
+          lastError = e;
+          debugPrint('[BLE] Connect attempt $attempts failed: $e');
+          if (attempts < 3) {
+            try {
+              await device.disconnect();
+            } catch (_) {}
+            await Future.delayed(const Duration(milliseconds: 600));
+          }
         }
       }
 
-      // Small delay for BLE connection layer to stabilize
-      await Future.delayed(const Duration(milliseconds: 350));
-
-      // Request MTU up to 512 for high-speed telemetry frames
-      if (!kIsWeb && Platform.isAndroid) {
-        try {
-          await device.requestMtu(512);
-        } catch (e) {
-          debugPrint('[BLE] requestMtu notice: $e');
-        }
+      if (!connected) {
+        throw lastError ?? Exception('Failed to connect after $attempts attempts');
       }
+
+      // Small delay for BLE connection layer and Android GATT to stabilize
+      await Future.delayed(const Duration(milliseconds: 500));
 
       // Discover GATT services with retry
       List<BluetoothService> services = [];
@@ -343,13 +342,21 @@ class BleConnectionManager extends ChangeNotifier {
       }
 
       if (services.isEmpty) {
-        await Future.delayed(const Duration(milliseconds: 500));
+        await Future.delayed(const Duration(milliseconds: 600));
         try {
           services = await device.discoverServices();
         } catch (e) {
           debugPrint('[BLE] discoverServices pass 2: $e');
         }
       }
+
+      // Track connection state AFTER services are successfully discovered
+      _connectionSubscription = device.connectionState.listen((state) {
+        if (state == BluetoothConnectionState.disconnected &&
+            _stage != ConnectionStage.disconnected) {
+          _handleDisconnection();
+        }
+      });
 
       BluetoothService? tvsService;
       final expectedServiceGuid = Guid(_adapter.serviceUuid);
@@ -362,8 +369,8 @@ class BleConnectionManager extends ChangeNotifier {
         final sStr = s.uuid.str.toUpperCase();
         if (s.uuid == expectedServiceGuid ||
             sNorm == expectedServiceNorm ||
-            sStr.contains('5456534D') ||
             sNorm.startsWith('5456534D') ||
+            sStr.contains('5456534') ||
             sStr.contains('TVS')) {
           tvsService = s;
           break;
@@ -558,40 +565,7 @@ class BleConnectionManager extends ChangeNotifier {
         } catch (_) {}
       }
 
-      // ── Step 1: Send Rider Name Handshake (`[R`) to activate the cluster ──
-      // Without this packet, the cluster stays dormant despite a valid GATT connection.
-      // The cluster displays "HELLO RIDER" and begins streaming telemetry only after
-      // receiving this handshake on characteristic 0x5352.
-      _setStage(ConnectionStage.handshaking);
-
-      final riderName = _savedBikeName ?? 'MOTOLINK';
-      final handshakePacket = _adapter.buildRiderNamePacket(riderName);
-      final handshakeSent = await writeRawPacket(handshakePacket);
-      debugPrint('[BLE] Rider Name handshake sent: $handshakeSent (${handshakePacket.length} bytes)');
-
-      if (!handshakeSent && _commandCharacteristic != null) {
-        // If handshake write failed, the bond may be stale — try re-bonding
-        debugPrint('[BLE] Handshake write failed. Attempting re-bond...');
-        try {
-          await _connectedDevice?.createBond();
-          await Future.delayed(const Duration(milliseconds: 500));
-          // Retry handshake after re-bond
-          await writeRawPacket(handshakePacket);
-        } catch (e) {
-          debugPrint('[BLE] Re-bond attempt: $e');
-        }
-      }
-
-      // Also send initial phone status (battery + 5G signal bars)
-      try {
-        final phoneStatusPacket = _adapter.buildPhoneStatePacket(
-          batteryPercent: 100,
-          signalStrengthBars: 5,
-        );
-        await writeRawPacket(phoneStatusPacket);
-      } catch (_) {}
-
-      // ── Step 2: Subscribe to telemetry notifications ──
+      // ── Step 1: Subscribe to telemetry notifications FIRST so no packets are missed ──
       if (_telemetryCharacteristic != null) {
         await _telemetryCharacteristic!.setNotifyValue(true);
         await _telemetrySubscription?.cancel();
@@ -622,7 +596,7 @@ class BleConnectionManager extends ChangeNotifier {
               );
             }
 
-            // ── Step 3: Only transition to streamingTelemetry once real data arrives ──
+            // ── Only transition to streamingTelemetry once real data arrives ──
             if (_stage != ConnectionStage.streamingTelemetry) {
               debugPrint('[BLE] First telemetry frame received! Cluster is LIVE.');
               _setStage(ConnectionStage.streamingTelemetry);
@@ -634,13 +608,52 @@ class BleConnectionManager extends ChangeNotifier {
         });
       }
 
-      // ── Step 4: Handshake watchdog ──
-      // If the cluster doesn't respond with telemetry within 5 seconds,
+      // Small delay for CCCD notification handshake to be established on MCU
+      await Future.delayed(const Duration(milliseconds: 250));
+
+      // ── Step 2: Send Rider Name Handshake (`[R`) to activate the cluster ──
+      // Without this packet, the cluster stays dormant despite a valid GATT connection.
+      // The cluster displays "HELLO RIDER" and begins streaming telemetry only after
+      // receiving this handshake on characteristic 0x5352.
+      _setStage(ConnectionStage.handshaking);
+
+      final riderName = _savedBikeName ?? 'MOTOLINK';
+      final handshakePacket = _adapter.buildRiderNamePacket(riderName);
+      final handshakeSent = await writeRawPacket(handshakePacket);
+      debugPrint('[BLE] Rider Name handshake sent: $handshakeSent (${handshakePacket.length} bytes)');
+
+      if (!handshakeSent && _commandCharacteristic != null) {
+        // If handshake write failed, the bond may be stale — try re-bonding
+        debugPrint('[BLE] Handshake write failed. Attempting re-bond...');
+        try {
+          await _connectedDevice?.createBond();
+          await Future.delayed(const Duration(milliseconds: 500));
+          // Retry handshake after re-bond
+          await writeRawPacket(handshakePacket);
+        } catch (e) {
+          debugPrint('[BLE] Re-bond attempt: $e');
+        }
+      }
+
+      // Small delay between handshake and phone status
+      await Future.delayed(const Duration(milliseconds: 150));
+
+      // Also send initial phone status (battery + 5G signal bars)
+      try {
+        final phoneStatusPacket = _adapter.buildPhoneStatePacket(
+          batteryPercent: 100,
+          signalStrengthBars: 5,
+        );
+        await writeRawPacket(phoneStatusPacket);
+      } catch (_) {}
+
+      // ── Step 3: Handshake watchdog ──
+      // If the cluster doesn't respond with telemetry within 6 seconds,
       // warn the user instead of falsely showing "Connected".
       _handshakeWatchdog?.cancel();
-      _handshakeWatchdog = Timer(const Duration(seconds: 5), () {
+      _handshakeWatchdog = Timer(const Duration(seconds: 6), () {
         if (_stage == ConnectionStage.handshaking) {
-          debugPrint('[BLE] Handshake watchdog: no telemetry after 5s. Retrying handshake...');
+          debugPrint('[BLE] Handshake watchdog: no telemetry after 6s. Retrying handshake...');
           // Retry the handshake one more time
           final retryPacket = _adapter.buildRiderNamePacket(riderName);
           writeRawPacket(retryPacket).then((success) {
@@ -651,8 +664,8 @@ class BleConnectionManager extends ChangeNotifier {
               );
             }
           });
-          // Give the retry another 5 seconds
-          _handshakeWatchdog = Timer(const Duration(seconds: 5), () {
+          // Give the retry another 6 seconds
+          _handshakeWatchdog = Timer(const Duration(seconds: 6), () {
             if (_stage == ConnectionStage.handshaking) {
               _setStage(
                 ConnectionStage.error,
