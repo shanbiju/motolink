@@ -485,18 +485,29 @@ class BleConnectionManager extends ChangeNotifier {
         }
       });
 
-      // Check bond state: if already bonded (or previously paired in OS), finalize directly; else prompt user for PIN
-      BluetoothBondState? currentBond = device.prevBondState;
-      if (currentBond == null) {
+      // Check bond state: query FlutterBluePlus.bondedDevices to see if device is already paired with Android
+      bool isBonded = bike.isPaired;
+      if (!isBonded) {
         try {
-          currentBond = await device.bondState.first.timeout(const Duration(seconds: 2));
+          final bonded = await FlutterBluePlus.bondedDevices;
+          isBonded = bonded.any((b) => b.remoteId == device.remoteId);
         } catch (_) {}
       }
+      if (!isBonded && device.prevBondState == BluetoothBondState.bonded) {
+        isBonded = true;
+      }
 
-      if (currentBond == BluetoothBondState.bonded || bike.isPaired) {
+      if (isBonded) {
         await _finalizeAuthentication();
       } else {
-        _setStage(ConnectionStage.awaitingPin);
+        // If not yet bonded, request Android OS pairing
+        try {
+          await device.createBond();
+        } catch (e) {
+          debugPrint('[BLE] createBond triggered: $e');
+        }
+        // Proceed to finalize authentication; Android SMP will complete pairing concurrently
+        await _finalizeAuthentication();
       }
     } catch (e) {
       final msg = e.toString().toLowerCase();
@@ -547,9 +558,9 @@ class BleConnectionManager extends ChangeNotifier {
   ///
   /// **Connection Flow:**
   /// 1. GATT bonded → stage = `authenticated`
-  /// 2. Send `[R` Rider Name handshake → stage = `handshaking`
+  /// 2. Send `[R` Rider Name handshake burst → stage = `handshaking`
   /// 3. Wait for first real `0x5A` telemetry frame → stage = `streamingTelemetry`
-  /// 4. Start 5-second watchdog: if no telemetry arrives, warn the user
+  /// 4. Start watchdog: if no telemetry arrives, retry and warn
   Future<void> _finalizeAuthentication() async {
     try {
       _setStage(ConnectionStage.authenticated);
@@ -609,34 +620,23 @@ class BleConnectionManager extends ChangeNotifier {
       }
 
       // Small delay for CCCD notification handshake to be established on MCU
-      await Future.delayed(const Duration(milliseconds: 250));
+      await Future.delayed(const Duration(milliseconds: 300));
 
-      // ── Step 2: Send Rider Name Handshake (`[R`) to activate the cluster ──
-      // Without this packet, the cluster stays dormant despite a valid GATT connection.
-      // The cluster displays "HELLO RIDER" and begins streaming telemetry only after
-      // receiving this handshake on characteristic 0x5352.
+      // ── Step 2: Send Rider Name Handshake Burst (`[R`) to activate the cluster ──
+      // Mirroring TVS Connect's ApacheBleService initial data packet flow:
+      // Send multiple handshake pulses spaced 250ms apart. This ensures the cluster MCU
+      // receives the wakeup command even if the first packet was dropped during BLE CCCD negotiation.
       _setStage(ConnectionStage.handshaking);
 
       final riderName = _savedBikeName ?? 'MOTOLINK';
       final handshakePacket = _adapter.buildRiderNamePacket(riderName);
-      final handshakeSent = await writeRawPacket(handshakePacket);
-      debugPrint('[BLE] Rider Name handshake sent: $handshakeSent (${handshakePacket.length} bytes)');
 
-      if (!handshakeSent && _commandCharacteristic != null) {
-        // If handshake write failed, the bond may be stale — try re-bonding
-        debugPrint('[BLE] Handshake write failed. Attempting re-bond...');
-        try {
-          await _connectedDevice?.createBond();
-          await Future.delayed(const Duration(milliseconds: 500));
-          // Retry handshake after re-bond
-          await writeRawPacket(handshakePacket);
-        } catch (e) {
-          debugPrint('[BLE] Re-bond attempt: $e');
-        }
+      for (int pulse = 0; pulse < 4; pulse++) {
+        if (_stage == ConnectionStage.streamingTelemetry) break;
+        final sent = await writeRawPacket(handshakePacket);
+        debugPrint('[BLE] Handshake pulse ${pulse + 1}/4 sent: $sent');
+        await Future.delayed(const Duration(milliseconds: 250));
       }
-
-      // Small delay between handshake and phone status
-      await Future.delayed(const Duration(milliseconds: 150));
 
       // Also send initial phone status (battery + 5G signal bars)
       try {
